@@ -18,6 +18,39 @@ from app.schemas.models import (
 from app.services.storage import storage_service
 from app.worker import optimize_image, transcode_video, sanitize_document
 
+async def get_or_create_bucket(db, project_id: str, bucket_name: str) -> dict:
+    bucket_data = await db.buckets.find_one({"name": bucket_name, "project_id": project_id})
+    if bucket_data:
+        return bucket_data
+    
+    import json
+    physical_name = f"{project_id}-{bucket_name.lower()}-{str(uuid.uuid4())[:8]}"
+    try:
+        if not storage_service.client.bucket_exists(bucket_name=physical_name):
+            storage_service.client.make_bucket(bucket_name=physical_name)
+            policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": "*"},
+                        "Action": ["s3:GetObject"],
+                        "Resource": [f"arn:aws:s3:::{physical_name}/*"]
+                    }
+                ]
+            }
+            storage_service.client.set_bucket_policy(bucket_name=physical_name, policy=json.dumps(policy))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create bucket in storage: {str(e)}")
+
+    new_bucket = Bucket(
+        name=bucket_name,
+        physical_name=physical_name,
+        project_id=project_id
+    )
+    result = await db.buckets.insert_one(new_bucket.model_dump(by_alias=True, exclude={"id"}))
+    return await db.buckets.find_one({"_id": result.inserted_id})
+
 router = APIRouter(dependencies=[Depends(get_current_project)])
 
 
@@ -31,9 +64,7 @@ async def init_upload(
     if not request.bucket:
         raise HTTPException(status_code=400, detail="Bucket name is required")
     
-    bucket_data = await db.buckets.find_one({"name": request.bucket, "project_id": str(project.id)})
-    if not bucket_data:
-        raise HTTPException(status_code=404, detail="Bucket not found")
+    bucket_data = await get_or_create_bucket(db, str(project.id), request.bucket)
     
     db_bucket = Bucket(**bucket_data)
 
@@ -78,9 +109,7 @@ async def complete_upload(
     if not request.bucket:
         raise HTTPException(status_code=400, detail="Bucket name is required")
 
-    bucket_data = await db.buckets.find_one({"name": request.bucket, "project_id": str(project.id)})
-    if not bucket_data:
-        raise HTTPException(status_code=404, detail="Bucket not found")
+    bucket_data = await get_or_create_bucket(db, str(project.id), request.bucket)
     
     db_bucket = Bucket(**bucket_data)
 
@@ -146,9 +175,7 @@ async def delete_file(
     if not request.bucket:
         raise HTTPException(status_code=400, detail="Bucket name is required")
 
-    bucket_data = await db.buckets.find_one({"name": request.bucket, "project_id": str(project.id)})
-    if not bucket_data:
-        raise HTTPException(status_code=404, detail="Bucket not found")
+    bucket_data = await get_or_create_bucket(db, str(project.id), request.bucket)
     
     db_bucket = Bucket(**bucket_data)
 
@@ -174,9 +201,7 @@ async def get_file_url(
     if not request.bucket:
         raise HTTPException(status_code=400, detail="Bucket name is required")
 
-    bucket_data = await db.buckets.find_one({"name": request.bucket, "project_id": str(project.id)})
-    if not bucket_data:
-        raise HTTPException(status_code=404, detail="Bucket not found")
+    bucket_data = await get_or_create_bucket(db, str(project.id), request.bucket)
     
     db_bucket = Bucket(**bucket_data)
 

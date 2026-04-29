@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.database import get_db
 from app.models.project import Project, Bucket, BucketCreate, BucketRead
@@ -88,6 +90,19 @@ async def delete_bucket(
     # Remove from DB
     await db.buckets.delete_one({"_id": bucket_data["_id"]})
     return {"status": "deleted", "name": name}
+
+@router.delete("/bucket_delete_root/{name}")
+async def delete_a_bucket(
+        name: str
+):
+    try:
+        storage_service.client.remove_bucket(bucket_name=name)
+    except Exception as e:
+        if "BucketNotEmpty" in str(e):
+            print(f"Bucket is not empty. Please delete all files first.")
+    return {"status": "deleted", "name": name}
+
+
 
 @router.put("/buckets/{name}", response_model=BucketRead)
 async def update_bucket(
